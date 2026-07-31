@@ -1,0 +1,16 @@
+name: Example Consumer - Security Baseline
+
+on:
+  pull_request:
+
+jobs:
+  security:
+    uses: acacoop/Security-Workflows/.github/workflows/security-baseline.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      security-events: write
+    with:
+      base-ref: ${{ github.event.pull_request.base.sha }}
+      head-ref: ${{ github.event.pull_request.head.sha }}
+      codeql-language: javascript
