@@ -1,0 +1,80 @@
+name: Sync to Checkmarx Repository
+
+on:
+  workflow_call:
+    inputs:
+      target_repo:
+        description: "Destination repository name"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    env:
+      TARGET_ORG: acacoop
+
+    steps:
+
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+
+      - name: Clone target repository
+        env:
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          git clone \
+          https://x-access-token:${SYNC_TOKEN}@github.com/${TARGET_OWNER}/${TARGET_REPO}.git \
+          /tmp/sync-repo
+
+      - name: Sync files
+        run: |
+          rsync -av --delete \
+            --exclude='.git' \
+            --exclude='.github' \
+            ./ /tmp/sync-repo/
+
+      - name: Create traceability metadata
+        run: |
+          REPO="${{ github.repository }}"
+          SHA="${{ github.sha }}"
+          ACTOR="${{ github.actor }}"
+          COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
+
+          cat > /tmp/sync-repo/.sync-metadata << EOF
+Source Repository: ${REPO}
+Source Commit: ${SHA}
+Source Author: ${ACTOR}
+Source Commit URL: ${COMMIT_URL}
+Sync Timestamp (UTC): $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+EOF
+
+      - name: Commit and push
+        run: |
+          cd /tmp/sync-repo
+
+          git config user.name "security-sync-bot"
+          git config user.email "security-sync-bot@empresa.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes detected"
+            exit 0
+          fi
+
+          REPO="${{ github.repository }}"
+          SHA="${{ github.sha }}"
+          ACTOR="${{ github.actor }}"
+
+          SHORT_SHA=$(echo "$SHA" | cut -c1-8)
+
+          COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
+
+          git commit -m "Sync ${SHORT_SHA} | ${ACTOR} | ${REPO} | ${COMMIT_URL}"
+
+          git push origin main
