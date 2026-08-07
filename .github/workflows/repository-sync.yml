@@ -27,35 +27,67 @@ jobs:
     env:
       TARGET_ORG: acacoop
       TARGET_BRANCH: main
+      # Todo lo que venga de contexto de GitHub se vuelca acá y se referencia
+      # como $VAR en los steps, nunca como ${{ }} directo dentro de run:.
+      SOURCE_REPO: ${{ github.repository }}
+      SOURCE_BRANCH: ${{ github.ref_name }}
+      SOURCE_SHA: ${{ github.sha }}
+      ACTOR: ${{ github.actor }}
+      RUN_ID: ${{ github.run_id }}
+      TARGET_REPO_INPUT: ${{ inputs.target_repo }}
 
     steps:
+
+      - name: Validate target_repo input
+        run: |
+          # Whitelist estricta: letras, números, guiones, puntos y guión bajo.
+          # Corta cualquier intento de inyección vía nombre de repo.
+          if ! [[ "$TARGET_REPO_INPUT" =~ ^[a-zA-Z0-9._-]+$ ]]; then
+            echo "::error::target_repo inválido: '$TARGET_REPO_INPUT'"
+            exit 1
+          fi
+          echo "target_repo validado: $TARGET_REPO_INPUT"
 
       - name: Checkout source repository
         uses: actions/checkout@v4
 
       - name: Print execution context
         run: |
-          echo "Source repository: ${{ github.repository }}"
-          echo "Source branch: ${{ github.ref_name }}"
-          echo "Source commit: ${{ github.sha }}"
-          echo "Actor: ${{ github.actor }}"
-          echo "Workflow run ID: ${{ github.run_id }}"
-          echo "Target organization: ${TARGET_ORG}"
-          echo "Target repository: ${{ inputs.target_repo }}"
-          echo "Target branch: ${TARGET_BRANCH}"
+          echo "Source repository: $SOURCE_REPO"
+          echo "Source branch: $SOURCE_BRANCH"
+          echo "Source commit: $SOURCE_SHA"
+          echo "Actor: $ACTOR"
+          echo "Workflow run ID: $RUN_ID"
+          echo "Target organization: $TARGET_ORG"
+          echo "Target repository: $TARGET_REPO_INPUT"
+          echo "Target branch: $TARGET_BRANCH"
           date -u
 
       - name: Clone target repository
         env:
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
-          git clone \
-            https://x-access-token:${SYNC_TOKEN}@github.com/${TARGET_ORG}/${{ inputs.target_repo }}.git \
-            /tmp/sync-repo
-
+          # El token nunca se pisa en la URL: se pasa vía extraheader de git
+          # config, así no queda expuesto en mensajes de error de git ni en
+          # el remote configurado del repo clonado.
+          git clone "https://github.com/${TARGET_ORG}/${TARGET_REPO_INPUT}.git" /tmp/sync-repo
           cd /tmp/sync-repo
 
-          git checkout ${TARGET_BRANCH} || git checkout -b ${TARGET_BRANCH}
+          git config --local http.https://github.com/.extraheader \
+            "AUTHORIZATION: basic $(echo -n "x-access-token:${SYNC_TOKEN}" | base64 -w0)"
+
+          git checkout "$TARGET_BRANCH" || git checkout -b "$TARGET_BRANCH"
+
+      - name: Dry-run sync (preview de cambios)
+        run: |
+          # Muestra qué se va a borrar/modificar antes de tocar nada,
+          # queda en el log del job para poder auditarlo.
+          echo "===== RSYNC DRY-RUN ====="
+          rsync -av --delete --dry-run \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.checkmarx-sync' \
+            ./ /tmp/sync-repo/
 
       - name: Sync files
         run: |
@@ -68,13 +100,13 @@ jobs:
       - name: Generate sync metadata
         run: |
           {
-            echo "Source Repository: ${{ github.repository }}"
-            echo "Source Commit: ${{ github.sha }}"
-            echo "Source Author: ${{ github.actor }}"
-            echo "Source Commit URL: https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
-            echo "Workflow Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo "Target Repository: ${TARGET_ORG}/${{ inputs.target_repo }}"
-            echo "Target Branch: ${TARGET_BRANCH}"
+            echo "Source Repository: $SOURCE_REPO"
+            echo "Source Commit: $SOURCE_SHA"
+            echo "Source Author: $ACTOR"
+            echo "Source Commit URL: https://github.com/$SOURCE_REPO/commit/$SOURCE_SHA"
+            echo "Workflow Run URL: https://github.com/$SOURCE_REPO/actions/runs/$RUN_ID"
+            echo "Target Repository: $TARGET_ORG/$TARGET_REPO_INPUT"
+            echo "Target Branch: $TARGET_BRANCH"
             echo "Sync Timestamp UTC: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           } > /tmp/sync-repo/.checkmarx-sync
 
@@ -107,21 +139,18 @@ jobs:
             exit 0
           fi
 
-          REPO="${{ github.repository }}"
-          SHA="${{ github.sha }}"
-          ACTOR="${{ github.actor }}"
-          COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
-          WORKFLOW_RUN_URL="https://github.com/${REPO}/actions/runs/${{ github.run_id }}"
+          COMMIT_URL="https://github.com/$SOURCE_REPO/commit/$SOURCE_SHA"
+          WORKFLOW_RUN_URL="https://github.com/$SOURCE_REPO/actions/runs/$RUN_ID"
 
-          git commit -m "Sync | Repo=${REPO} | Commit=${SHA} | Author=${ACTOR}" \
-                     -m "Source commit: ${COMMIT_URL}" \
-                     -m "Workflow run: ${WORKFLOW_RUN_URL}"
+          git commit -m "Sync | Repo=$SOURCE_REPO | Commit=$SOURCE_SHA | Author=$ACTOR" \
+                     -m "Source commit: $COMMIT_URL" \
+                     -m "Workflow run: $WORKFLOW_RUN_URL"
 
           echo "Rebasing with latest target branch before push..."
-          git pull --rebase origin ${TARGET_BRANCH}
+          git pull --rebase origin "$TARGET_BRANCH"
 
           echo "Pushing changes to target repository..."
-          git push origin ${TARGET_BRANCH}
+          git push origin "$TARGET_BRANCH"
 
       - name: Show final target repository status
         run: |
