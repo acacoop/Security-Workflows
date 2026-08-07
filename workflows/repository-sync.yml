@@ -8,12 +8,21 @@ on:
         required: true
         type: string
 
+    secrets:
+      SYNC_TOKEN:
+        required: true
+
 permissions:
   contents: read
+
+concurrency:
+  group: sync-checkmarx-${{ inputs.target_repo }}
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     env:
       TARGET_ORG: acacoop
@@ -23,6 +32,18 @@ jobs:
 
       - name: Checkout source repository
         uses: actions/checkout@v4
+
+      - name: Print execution context
+        run: |
+          echo "Source repository: ${{ github.repository }}"
+          echo "Source branch: ${{ github.ref_name }}"
+          echo "Source commit: ${{ github.sha }}"
+          echo "Actor: ${{ github.actor }}"
+          echo "Workflow run ID: ${{ github.run_id }}"
+          echo "Target organization: ${TARGET_ORG}"
+          echo "Target repository: ${{ inputs.target_repo }}"
+          echo "Target branch: ${TARGET_BRANCH}"
+          date -u
 
       - name: Clone target repository
         env:
@@ -44,14 +65,42 @@ jobs:
             --exclude='.checkmarx-sync' \
             ./ /tmp/sync-repo/
 
-      - name: Commit and push
+      - name: Generate sync metadata
+        run: |
+          {
+            echo "Source Repository: ${{ github.repository }}"
+            echo "Source Commit: ${{ github.sha }}"
+            echo "Source Author: ${{ github.actor }}"
+            echo "Source Commit URL: https://github.com/${{ github.repository }}/commit/${{ github.sha }}"
+            echo "Workflow Run URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "Target Repository: ${TARGET_ORG}/${{ inputs.target_repo }}"
+            echo "Target Branch: ${TARGET_BRANCH}"
+            echo "Sync Timestamp UTC: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          } > /tmp/sync-repo/.checkmarx-sync
+
+          echo "Metadata file generated:"
+          cat /tmp/sync-repo/.checkmarx-sync
+
+      - name: Commit and push changes
         run: |
           cd /tmp/sync-repo
 
           git config user.name "security-sync-bot"
           git config user.email "security-sync-bot@acacoop.com.ar"
 
+          echo "===== FILES IN TARGET REPO ====="
+          ls -la
+
+          echo "===== CHECK IF METADATA IS IGNORED ====="
+          git check-ignore -v .checkmarx-sync || true
+
           git add -A
+
+          echo "===== GIT STATUS ====="
+          git status
+
+          echo "===== STAGED FILES ====="
+          git diff --cached --name-status
 
           if git diff --cached --quiet; then
             echo "No changes detected"
@@ -61,19 +110,22 @@ jobs:
           REPO="${{ github.repository }}"
           SHA="${{ github.sha }}"
           ACTOR="${{ github.actor }}"
-
           COMMIT_URL="https://github.com/${REPO}/commit/${SHA}"
+          WORKFLOW_RUN_URL="https://github.com/${REPO}/actions/runs/${{ github.run_id }}"
 
-          cat > .checkmarx-sync << EOF
-Source Repository: ${REPO}
-Source Commit: ${SHA}
-Source Author: ${ACTOR}
-Source Commit URL: ${COMMIT_URL}
-Sync Timestamp (UTC): $(date -u +"%Y-%m-%dT%H:%M:%SZ")
-EOF
+          git commit -m "Sync | Repo=${REPO} | Commit=${SHA} | Author=${ACTOR}" \
+                     -m "Source commit: ${COMMIT_URL}" \
+                     -m "Workflow run: ${WORKFLOW_RUN_URL}"
 
-          git add -A
-
-          git commit -m "Sync | Repo=${REPO} | Commit=${SHA} | Author=${ACTOR} | ${COMMIT_URL}"
-
+          echo "Pushing changes to target repository..."
           git push origin ${TARGET_BRANCH}
+
+      - name: Show final target repository status
+        run: |
+          cd /tmp/sync-repo
+
+          echo "===== LAST COMMIT ====="
+          git log -1 --oneline
+
+          echo "===== FINAL STATUS ====="
+          git status
