@@ -60,13 +60,15 @@ name: Sync Repository to Checkmarx
 on:
   push:
     branches:
-      - preprod
+      - main
 
   workflow_dispatch:
 
 jobs:
   sync:
     uses: acacoop/Security-Workflows/.github/workflows/repository-sync.yml@main
+    with:
+      target_repo: repo-pruebaSec-destino
     secrets: inherit
 ```
 
