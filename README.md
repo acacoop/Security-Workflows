@@ -74,10 +74,14 @@ jobs:
 
 # Configuración
 
-Modificar las variables definidas en el workflow según corresponda:
+Cada proyecto debe definir únicamente el repositorio espejo donde se sincronizará el código para su análisis en Checkmarx.
 
-| Variable | Descripción |
-|-----------|-------------|
-| SOURCE_BRANCH | Rama candidata a producción |
-| TARGET_REPOSITORY | Repositorio espejo utilizado por Checkmarx |
-| TARGET_BRANCH | Rama 
+Ejemplo:
+
+```yaml
+jobs:
+  sync:
+    uses: acacoop/Security-Workflows/.github/workflows/repository-sync.yml@main
+    with:
+      target_repo: repo-pruebaSec-destino
+    secrets: inherit
