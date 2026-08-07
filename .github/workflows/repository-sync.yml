@@ -117,6 +117,9 @@ jobs:
                      -m "Source commit: ${COMMIT_URL}" \
                      -m "Workflow run: ${WORKFLOW_RUN_URL}"
 
+          echo "Rebasing with latest target branch before push..."
+          git pull --rebase origin ${TARGET_BRANCH}
+
           echo "Pushing changes to target repository..."
           git push origin ${TARGET_BRANCH}
 
