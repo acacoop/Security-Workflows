@@ -60,16 +60,20 @@ name: Sync Repository to Checkmarx
 on:
   push:
     branches:
-      - main
+      - preprod
 
   workflow_dispatch:
 
 jobs:
   sync:
+    # Recomendado: referenciar el workflow por tag de release o SHA de commit
+    # en lugar de @main, para evitar cambios no auditados (supply chain).
     uses: acacoop/Security-Workflows/.github/workflows/repository-sync.yml@main
     with:
       target_repo: repo-pruebaSec-destino
-    secrets: inherit
+      allowed_source_branch: preprod
+    secrets:
+      SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 ```
 
 ---
@@ -90,7 +94,7 @@ name: Sync Repository to Checkmarx
 on:
   push:
     branches:
-      - main
+      - preprod
 
   workflow_dispatch:
 
@@ -99,7 +103,9 @@ jobs:
     uses: acacoop/Security-Workflows/.github/workflows/repository-sync.yml@main
     with:
       target_repo: repo-pruebaSec-destino
-    secrets: inherit
+      allowed_source_branch: preprod
+    secrets:
+      SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 ```
 
 ## Parámetros del Workflow
@@ -124,10 +130,10 @@ Ejemplo:
 
 ```yaml
 branches:
-  - main
+  - preprod
 ```
 
-En este caso, cada cambio enviado a la rama `main` ejecutará automáticamente el proceso de sincronización.
+En este caso, cada cambio enviado a la rama `preprod` (stage) ejecutará automáticamente el proceso de sincronización. La rama debe coincidir con el parámetro `allowed_source_branch`.
 
 ---
 
@@ -175,19 +181,32 @@ target_repo: repo-pruebaSec-destino
 
 Cada proyecto debe utilizar su propio repositorio espejo.
 
+> **Seguridad:** el workflow reutilizable valida internamente una allowlist de mapeos `repo fuente → repo espejo`. Al dar de alta un nuevo proyecto, se debe agregar el mapeo correspondiente en `repository-sync.yml` (paso *Validate source repo -> target repo mapping*). Un repositorio no autorizado no podrá escribir en el espejo de otro proyecto.
+
 ---
 
-### secrets: inherit
+### allowed_source_branch
 
-Permite heredar automáticamente los secretos definidos a nivel de organización o repositorio para que puedan ser utilizados por el workflow reutilizable.
+Rama del repositorio fuente desde la cual está permitido sincronizar. El workflow falla si el sync se dispara desde cualquier otra rama, evitando que una feature branch sin revisar pise el espejo.
 
 Ejemplo:
 
 ```yaml
-secrets: inherit
+allowed_source_branch: preprod
 ```
 
-Esto evita tener que redefinir los mismos secretos en cada repositorio que implemente el template.
+---
+
+### secrets
+
+Los secretos deben pasarse de forma **explícita** al workflow reutilizable. No usar `secrets: inherit`, ya que heredaría *todos* los secretos de la organización al workflow, ampliando innecesariamente la superficie de exposición.
+
+Ejemplo:
+
+```yaml
+secrets:
+  SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
+```
 
 El workflow requiere la existencia del secreto organizacional:
 
@@ -196,3 +215,16 @@ SYNC_TOKEN
 ```
 
 utilizado para autenticarse contra el repositorio destino y realizar la sincronización.
+
+> **Seguridad:** el `SYNC_TOKEN` debe ser un **fine-grained token o GitHub App** con permiso `contents: write` únicamente sobre los repositorios espejo. No utilizar un PAT clásico con acceso de escritura a toda la organización.
+
+---
+
+# Recomendaciones de Seguridad Adicionales
+
+Estas medidas complementan el workflow y deben configurarse fuera de este repositorio:
+
+- **Estado del commit publicado solo por Checkmarx:** el estado (válido/inválido) del commit debe ser publicado exclusivamente por la GitHub App o servicio de Checkmarx mediante la Checks/Status API, nunca por workflows o usuarios con permisos genéricos.
+- **Branch protection en `main`:** exigir el check de Checkmarx como *required status check* en el repositorio de desarrollo, verificando el SHA exacto del head del PR `preprod → main`.
+- **Repositorio espejo privado:** el espejo debe ser privado; el clone ya se realiza autenticado con el `SYNC_TOKEN`.
+- **Referencias inmutables:** consumir este workflow reutilizable por tag de release o SHA de commit en lugar de `@main`.
