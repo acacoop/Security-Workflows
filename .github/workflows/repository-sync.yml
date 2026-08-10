@@ -3,10 +3,6 @@ name: Sync to Checkmarx Repository
 on:
   workflow_call:
     inputs:
-      target_repo:
-        description: "Destination repository name"
-        required: true
-        type: string
       # [FIX 2 - Validación de rama de origen] Rama desde la cual está permitido
       # sincronizar. Evita que una feature branch sin revisar pise el espejo y
       # obtenga un estado "válido" sobre código que no es el que se promociona.
@@ -24,7 +20,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: sync-checkmarx-${{ inputs.target_repo }}
+  # El espejo se deriva del repo fuente, así que serializar por repo fuente
+  # equivale a serializar por espejo.
+  group: sync-checkmarx-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -40,22 +38,32 @@ jobs:
       SOURCE_SHA: ${{ github.sha }}
       ACTOR: ${{ github.actor }}
       RUN_ID: ${{ github.run_id }}
-      TARGET_REPO_INPUT: ${{ inputs.target_repo }}
       ALLOWED_SOURCE_BRANCH: ${{ inputs.allowed_source_branch }}
 
     steps:
 
-      - name: Validate target_repo input
+      - name: Derive target repository name
+        id: derive-target
         run: |
-          # [FIX 5 - Regex más estricta] Antes: ^[a-zA-Z0-9._-]+$ permitía
-          # nombres como "..", "." o que empiecen con "-" (interpretable como
-          # flag por git). Ahora: debe empezar y terminar con alfanumérico y
-          # se prohíbe ".." explícitamente.
-          if ! [[ "$TARGET_REPO_INPUT" =~ ^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$ ]] || [[ "$TARGET_REPO_INPUT" == *".."* ]]; then
-            echo "::error::target_repo inválido: '$TARGET_REPO_INPUT'"
+          # [FIX 1 - Convención de nombres fuente→espejo] El espejo se deriva
+          # SIEMPRE del nombre del repo fuente: "<repo>-security-check".
+          # Como SOURCE_REPO_NAME viene de github.repository (valor puesto por
+          # GitHub, no falsificable), cada repositorio solo puede escribir en
+          # SU propio espejo: es imposible pisar el espejo de otro proyecto.
+          # Esto reemplaza la allowlist de pares y no requiere mantenimiento
+          # al dar de alta nuevos proyectos.
+          SOURCE_REPO_NAME="${SOURCE_REPO##*/}"
+          TARGET_REPO="${SOURCE_REPO_NAME}-security-check"
+
+          # [FIX 5 - Validación defensiva del nombre] El nombre derivado debe
+          # empezar y terminar con alfanumérico y no contener "..".
+          if ! [[ "$TARGET_REPO" =~ ^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$ ]] || [[ "$TARGET_REPO" == *".."* ]]; then
+            echo "::error::Nombre de espejo derivado inválido: '$TARGET_REPO'"
             exit 1
           fi
-          echo "target_repo validado: $TARGET_REPO_INPUT"
+
+          echo "Repositorio espejo derivado: $TARGET_ORG/$TARGET_REPO"
+          echo "TARGET_REPO=$TARGET_REPO" >> "$GITHUB_ENV"
 
       - name: Validate source branch
         run: |
@@ -66,32 +74,6 @@ jobs:
             exit 1
           fi
           echo "Rama de origen validada: $SOURCE_BRANCH"
-
-      - name: Validate source repo -> target repo mapping
-        run: |
-          # [FIX 1 - Allowlist fuente→espejo] Cada repositorio fuente solo
-          # puede escribir en SU repositorio espejo autorizado. Sin esto,
-          # cualquier repo de la org podría sobrescribir el espejo de otro
-          # proyecto (rsync --delete) y obtener un estado "válido" sobre
-          # código que no corresponde.
-          #
-          # Mantener este mapeo actualizado al dar de alta nuevos proyectos.
-          # Formato: "repo_fuente_completo:repo_espejo_permitido"
-          ALLOWED_MAPPINGS=(
-            "acacoop/repo-pruebaSec-origen:repo-pruebaSec-destino"
-          )
-
-          for mapping in "${ALLOWED_MAPPINGS[@]}"; do
-            src="${mapping%%:*}"
-            dst="${mapping##*:}"
-            if [ "$SOURCE_REPO" = "$src" ] && [ "$TARGET_REPO_INPUT" = "$dst" ]; then
-              echo "Mapeo autorizado: $SOURCE_REPO -> $TARGET_ORG/$TARGET_REPO_INPUT"
-              exit 0
-            fi
-          done
-
-          echo "::error::El repositorio '$SOURCE_REPO' no está autorizado a sincronizar hacia '$TARGET_ORG/$TARGET_REPO_INPUT'. Agregar el mapeo a la allowlist si corresponde."
-          exit 1
 
       - name: Checkout source repository
         # [FIX 7 - Pin por SHA] Antes: actions/checkout@v4 (tag mutable, riesgo
@@ -107,7 +89,7 @@ jobs:
           echo "Actor: $ACTOR"
           echo "Workflow run ID: $RUN_ID"
           echo "Target organization: $TARGET_ORG"
-          echo "Target repository: $TARGET_REPO_INPUT"
+          echo "Target repository: $TARGET_REPO"
           echo "Target branch: $TARGET_BRANCH"
           date -u
 
@@ -128,7 +110,7 @@ jobs:
           echo "::add-mask::$AUTH_HEADER"
 
           git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
-            clone "https://github.com/${TARGET_ORG}/${TARGET_REPO_INPUT}.git" /tmp/sync-repo
+            clone "https://github.com/${TARGET_ORG}/${TARGET_REPO}.git" /tmp/sync-repo
 
           cd /tmp/sync-repo
 
@@ -182,7 +164,7 @@ jobs:
             echo "Source Author: $ACTOR"
             echo "Source Commit URL: https://github.com/$SOURCE_REPO/commit/$SOURCE_SHA"
             echo "Workflow Run URL: https://github.com/$SOURCE_REPO/actions/runs/$RUN_ID"
-            echo "Target Repository: $TARGET_ORG/$TARGET_REPO_INPUT"
+            echo "Target Repository: $TARGET_ORG/$TARGET_REPO"
             echo "Target Branch: $TARGET_BRANCH"
             echo "Sync Timestamp UTC: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           } > /tmp/sync-repo/.checkmarx-sync

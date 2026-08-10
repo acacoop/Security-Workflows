@@ -39,7 +39,7 @@ Antes de implementar este workflow se debe contar con:
 - Acceso al repositorio de workflows corporativos.
 - Permisos para utilizar workflows reutilizables.
 - Secret organizacional `SYNC_TOKEN`.
-- Repositorio espejo configurado para Checkmarx.
+- Repositorio espejo creado con la convención `<repo>-security-check` (ver [Convención de nombres del repositorio espejo](#convención-de-nombres-del-repositorio-espejo)).
 - Proyecto creado en Checkmarx.
 
 ---
@@ -70,11 +70,12 @@ jobs:
     # en lugar de @main, para evitar cambios no auditados (supply chain).
     uses: acacoop/Security-Workflows/.github/workflows/repository-sync.yml@main
     with:
-      target_repo: repo-pruebaSec-destino
       allowed_source_branch: preprod
     secrets:
       SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 ```
+
+> El repositorio espejo **no se configura**: se deriva automáticamente del nombre del repositorio con la convención `<repo>-security-check` (ver [Convención de nombres del repositorio espejo](#convención-de-nombres-del-repositorio-espejo)).
 
 ---
 
@@ -102,7 +103,6 @@ jobs:
   sync:
     uses: acacoop/Security-Workflows/.github/workflows/repository-sync.yml@main
     with:
-      target_repo: repo-pruebaSec-destino
       allowed_source_branch: preprod
     secrets:
       SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
@@ -169,19 +169,29 @@ Donde:
 
 ---
 
-### target_repo
+### Convención de nombres del repositorio espejo
 
-Nombre del repositorio espejo destino donde se copiará el código para su análisis en Checkmarx.
+El repositorio espejo destino **no se configura por parámetro**: el workflow lo deriva automáticamente del nombre del repositorio fuente aplicando la convención:
 
-Ejemplo:
-
-```yaml
-target_repo: repo-pruebaSec-destino
+```text
+<nombre-del-repo>-security-check
 ```
 
-Cada proyecto debe utilizar su propio repositorio espejo.
+Ejemplos:
 
-> **Seguridad:** el workflow reutilizable valida internamente una allowlist de mapeos `repo fuente → repo espejo`. Al dar de alta un nuevo proyecto, se debe agregar el mapeo correspondiente en `repository-sync.yml` (paso *Validate source repo -> target repo mapping*). Un repositorio no autorizado no podrá escribir en el espejo de otro proyecto.
+| Repositorio fuente     | Repositorio espejo               |
+| ---------------------- | -------------------------------- |
+| `acacoop/mi-app`       | `acacoop/mi-app-security-check`  |
+| `acacoop/api-pagos`    | `acacoop/api-pagos-security-check` |
+
+> **Seguridad:** el nombre del repo fuente proviene de `github.repository`, un valor asignado por GitHub que no puede falsificarse. Por lo tanto, cada repositorio solo puede escribir en **su propio** espejo: es imposible que un proyecto pise el espejo de otro. Esta convención reemplaza la necesidad de mantener una allowlist central.
+
+**Al dar de alta un proyecto nuevo** solo hay que:
+
+1. Crear el repositorio espejo (privado) siguiendo la convención: `<repo>-security-check`.
+2. Otorgar acceso de escritura al espejo al `SYNC_TOKEN` (si es fine-grained o GitHub App).
+3. Crear el `sync.yml` en el repo fuente (ver [Configuración](#configuración)).
+4. Crear el proyecto en Checkmarx apuntando al espejo.
 
 ---
 
