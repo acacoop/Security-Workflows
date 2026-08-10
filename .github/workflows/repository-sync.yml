@@ -27,8 +27,6 @@ jobs:
     env:
       TARGET_ORG: acacoop
       TARGET_BRANCH: main
-      # Todo lo que venga de contexto de GitHub se vuelca acá y se referencia
-      # como $VAR en los steps, nunca como ${{ }} directo dentro de run:.
       SOURCE_REPO: ${{ github.repository }}
       SOURCE_BRANCH: ${{ github.ref_name }}
       SOURCE_SHA: ${{ github.sha }}
