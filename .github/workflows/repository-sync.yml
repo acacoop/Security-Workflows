@@ -103,10 +103,13 @@ jobs:
           # el propio comando de clone (-c), permitiendo que el espejo sea
           # PRIVADO. El token sigue sin viajar en la URL, así no queda
           # expuesto en mensajes de error de git ni en el remote configurado.
-          AUTH_HEADER="AUTHORIZATION: basic $(echo -n "x-access-token:${SYNC_TOKEN}" | base64 -w0)"
+          B64_TOKEN="$(echo -n "x-access-token:${SYNC_TOKEN}" | base64 -w0)"
 
-          # Registra el header derivado en el enmascarador de logs: Actions
+          # Registra los valores derivados en el enmascarador de logs: Actions
           # solo enmascara el valor crudo del secreto, no su forma en base64.
+          echo "::add-mask::$B64_TOKEN"
+
+          AUTH_HEADER="AUTHORIZATION: basic $B64_TOKEN"
           echo "::add-mask::$AUTH_HEADER"
 
           git -c http.https://github.com/.extraheader="$AUTH_HEADER" \

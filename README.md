@@ -46,36 +46,7 @@ Antes de implementar este workflow se debe contar con:
 
 # Instalación
 
-Crear el siguiente archivo:
-
-```text
-.github/workflows/sync.yml
-```
-
-Contenido:
-
-```yaml
-name: Sync Repository to Checkmarx
-
-on:
-  push:
-    branches:
-      - preprod
-
-  workflow_dispatch:
-
-jobs:
-  sync:
-    # Recomendado: referenciar el workflow por tag de release o SHA de commit
-    # en lugar de @main, para evitar cambios no auditados (supply chain).
-    uses: acacoop/Security-Workflows/.github/workflows/repository-sync.yml@main
-    with:
-      allowed_source_branch: preprod
-    secrets:
-      SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
-```
-
-> El repositorio espejo **no se configura**: se deriva automáticamente del nombre del repositorio con la convención `<repo>-security-check` (ver [Convención de nombres del repositorio espejo](#convención-de-nombres-del-repositorio-espejo)).
+Cada proyecto debe crear el archivo `.github/workflows/sync.yml` con el contenido indicado en la sección [Configuración](#configuración).
 
 ---
 
@@ -101,12 +72,16 @@ on:
 
 jobs:
   sync:
+    # Recomendado: referenciar el workflow por tag de release o SHA de commit
+    # en lugar de @main, para evitar cambios no auditados (supply chain).
     uses: acacoop/Security-Workflows/.github/workflows/repository-sync.yml@main
     with:
       allowed_source_branch: preprod
     secrets:
       SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
 ```
+
+> El repositorio espejo **no se configura**: se deriva automáticamente del nombre del repositorio con la convención `<repo>-security-check` (ver [Convención de nombres del repositorio espejo](#convención-de-nombres-del-repositorio-espejo)).
 
 ## Parámetros del Workflow
 
