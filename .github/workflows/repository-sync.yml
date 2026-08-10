@@ -123,6 +123,10 @@ jobs:
           # expuesto en mensajes de error de git ni en el remote configurado.
           AUTH_HEADER="AUTHORIZATION: basic $(echo -n "x-access-token:${SYNC_TOKEN}" | base64 -w0)"
 
+          # Registra el header derivado en el enmascarador de logs: Actions
+          # solo enmascara el valor crudo del secreto, no su forma en base64.
+          echo "::add-mask::$AUTH_HEADER"
+
           git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
             clone "https://github.com/${TARGET_ORG}/${TARGET_REPO_INPUT}.git" /tmp/sync-repo
 
@@ -215,6 +219,11 @@ jobs:
           COMMIT_URL="https://github.com/$SOURCE_REPO/commit/$SOURCE_SHA"
           WORKFLOW_RUN_URL="https://github.com/$SOURCE_REPO/actions/runs/$RUN_ID"
 
+          # Guarda el tip local ANTES de commitear para comparar luego contra
+          # el remoto (más robusto que HEAD~1, que no siempre coincide con el
+          # tip remoto al momento del clone, p.ej. en ramas recién creadas).
+          ORIGINAL_TIP="$(git rev-parse --verify HEAD 2>/dev/null || echo '')"
+
           git commit -m "Sync | Repo=$SOURCE_REPO | Commit=$SOURCE_SHA | Author=$ACTOR" \
                      -m "Source commit: $COMMIT_URL" \
                      -m "Workflow run: $WORKFLOW_RUN_URL"
@@ -228,7 +237,7 @@ jobs:
           # inesperada que hay que investigar).
           echo "Verificando que el espejo no haya divergido desde el clone..."
           if git fetch origin "$TARGET_BRANCH" 2>/dev/null; then
-            if [ "$(git rev-parse "origin/$TARGET_BRANCH")" != "$(git rev-parse HEAD~1 2>/dev/null || echo '')" ]; then
+            if [ "$(git rev-parse "origin/$TARGET_BRANCH")" != "$ORIGINAL_TIP" ]; then
               echo "::error::El espejo divergió durante el sync (escritura externa detectada). Abortando para no mezclar contenido."
               exit 1
             fi
