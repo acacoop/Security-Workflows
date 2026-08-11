@@ -3,10 +3,14 @@ name: Sync to Checkmarx Repository
 on:
   workflow_call:
     inputs:
-      target_repo:
-        description: "Destination repository name"
-        required: true
+      # [FIX 2 - Validación de rama de origen] Rama desde la cual está permitido
+      # sincronizar. Evita que una feature branch sin revisar pise el espejo y
+      # obtenga un estado "válido" sobre código que no es el que se promociona.
+      allowed_source_branch:
+        description: "Branch allowed to trigger the sync (e.g. preprod/stage)"
+        required: false
         type: string
+        default: "stage"
 
     secrets:
       SYNC_TOKEN:
@@ -16,7 +20,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: sync-checkmarx-${{ inputs.target_repo }}
+  # El espejo se deriva del repo fuente, así que serializar por repo fuente
+  # equivale a serializar por espejo.
+  group: sync-checkmarx-${{ github.repository }}
   cancel-in-progress: false
 
 jobs:
@@ -32,22 +38,48 @@ jobs:
       SOURCE_SHA: ${{ github.sha }}
       ACTOR: ${{ github.actor }}
       RUN_ID: ${{ github.run_id }}
-      TARGET_REPO_INPUT: ${{ inputs.target_repo }}
+      ALLOWED_SOURCE_BRANCH: ${{ inputs.allowed_source_branch }}
 
     steps:
 
-      - name: Validate target_repo input
+      - name: Derive target repository name
+        id: derive-target
         run: |
-          # Whitelist estricta: letras, números, guiones, puntos y guión bajo.
-          # Corta cualquier intento de inyección vía nombre de repo.
-          if ! [[ "$TARGET_REPO_INPUT" =~ ^[a-zA-Z0-9._-]+$ ]]; then
-            echo "::error::target_repo inválido: '$TARGET_REPO_INPUT'"
+          # [FIX 1 - Convención de nombres fuente→espejo] El espejo se deriva
+          # SIEMPRE del nombre del repo fuente: "<repo>-security-check".
+          # Como SOURCE_REPO_NAME viene de github.repository (valor puesto por
+          # GitHub, no falsificable), cada repositorio solo puede escribir en
+          # SU propio espejo: es imposible pisar el espejo de otro proyecto.
+          # Esto reemplaza la allowlist de pares y no requiere mantenimiento
+          # al dar de alta nuevos proyectos.
+          SOURCE_REPO_NAME="${SOURCE_REPO##*/}"
+          TARGET_REPO="${SOURCE_REPO_NAME}-security-check"
+
+          # [FIX 5 - Validación defensiva del nombre] El nombre derivado debe
+          # empezar y terminar con alfanumérico y no contener "..".
+          if ! [[ "$TARGET_REPO" =~ ^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?$ ]] || [[ "$TARGET_REPO" == *".."* ]]; then
+            echo "::error::Nombre de espejo derivado inválido: '$TARGET_REPO'"
             exit 1
           fi
-          echo "target_repo validado: $TARGET_REPO_INPUT"
+
+          echo "Repositorio espejo derivado: $TARGET_ORG/$TARGET_REPO"
+          echo "TARGET_REPO=$TARGET_REPO" >> "$GITHUB_ENV"
+
+      - name: Validate source branch
+        run: |
+          # [FIX 2 - Validación de rama de origen] Solo la rama autorizada
+          # (stage/preprod) puede sincronizar hacia el espejo de Checkmarx.
+          if [ "$SOURCE_BRANCH" != "$ALLOWED_SOURCE_BRANCH" ]; then
+            echo "::error::La rama '$SOURCE_BRANCH' no está autorizada a sincronizar. Rama permitida: '$ALLOWED_SOURCE_BRANCH'"
+            exit 1
+          fi
+          echo "Rama de origen validada: $SOURCE_BRANCH"
 
       - name: Checkout source repository
-        uses: actions/checkout@v4
+        # [FIX 7 - Pin por SHA] Antes: actions/checkout@v4 (tag mutable, riesgo
+        # de supply chain si el tag se mueve a un commit malicioso).
+        # Ahora: pinneado al SHA completo del commit de la release v4.2.2.
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Print execution context
         run: |
@@ -57,7 +89,7 @@ jobs:
           echo "Actor: $ACTOR"
           echo "Workflow run ID: $RUN_ID"
           echo "Target organization: $TARGET_ORG"
-          echo "Target repository: $TARGET_REPO_INPUT"
+          echo "Target repository: $TARGET_REPO"
           echo "Target branch: $TARGET_BRANCH"
           date -u
 
@@ -65,14 +97,27 @@ jobs:
         env:
           SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
-          # El token nunca se pisa en la URL: se pasa vía extraheader de git
-          # config, así no queda expuesto en mensajes de error de git ni en
-          # el remote configurado del repo clonado.
-          git clone "https://github.com/${TARGET_ORG}/${TARGET_REPO_INPUT}.git" /tmp/sync-repo
+          # [FIX 3 - Clone autenticado] Antes el clone se hacía SIN token (el
+          # extraheader se configuraba después), lo que obligaba a que el
+          # espejo fuera público. Ahora el header de autenticación se pasa en
+          # el propio comando de clone (-c), permitiendo que el espejo sea
+          # PRIVADO. El token sigue sin viajar en la URL, así no queda
+          # expuesto en mensajes de error de git ni en el remote configurado.
+          B64_TOKEN="$(echo -n "x-access-token:${SYNC_TOKEN}" | base64 -w0)"
+
+          # Registra los valores derivados en el enmascarador de logs: Actions
+          # solo enmascara el valor crudo del secreto, no su forma en base64.
+          echo "::add-mask::$B64_TOKEN"
+
+          AUTH_HEADER="AUTHORIZATION: basic $B64_TOKEN"
+          echo "::add-mask::$AUTH_HEADER"
+
+          git -c http.https://github.com/.extraheader="$AUTH_HEADER" \
+            clone "https://github.com/${TARGET_ORG}/${TARGET_REPO}.git" /tmp/sync-repo
+
           cd /tmp/sync-repo
 
-          git config --local http.https://github.com/.extraheader \
-            "AUTHORIZATION: basic $(echo -n "x-access-token:${SYNC_TOKEN}" | base64 -w0)"
+          git config --local http.https://github.com/.extraheader "$AUTH_HEADER"
 
           git checkout "$TARGET_BRANCH" || git checkout -b "$TARGET_BRANCH"
 
@@ -80,10 +125,19 @@ jobs:
         run: |
           # Muestra qué se va a borrar/modificar antes de tocar nada,
           # queda en el log del job para poder auditarlo.
+          #
+          # [FIX 4 - Incluir .github en el análisis] Antes se excluía todo
+          # ".github", dejando los workflows de CI/CD (código ejecutable con
+          # acceso a secretos) fuera del análisis de seguridad. Ahora solo se
+          # excluye ".github/workflows" (GitHub rechaza pushes de workflows
+          # sin scope "workflow" y no queremos ejecutar CI en el espejo);
+          # esos archivos se copian aparte a ".github-workflows-scan/" para
+          # que Checkmarx también los analice.
           echo "===== RSYNC DRY-RUN ====="
           rsync -av --delete --dry-run \
             --exclude='.git' \
-            --exclude='.github' \
+            --exclude='.github/workflows' \
+            --exclude='.github-workflows-scan' \
             --exclude='.checkmarx-sync' \
             ./ /tmp/sync-repo/
 
@@ -91,9 +145,19 @@ jobs:
         run: |
           rsync -av --delete \
             --exclude='.git' \
-            --exclude='.github' \
+            --exclude='.github/workflows' \
+            --exclude='.github-workflows-scan' \
             --exclude='.checkmarx-sync' \
             ./ /tmp/sync-repo/
+
+          # [FIX 4 - Incluir .github en el análisis] Copia de los workflows a
+          # una ruta neutra para que sean escaneados sin que GitHub los trate
+          # como workflows activos del espejo.
+          rm -rf /tmp/sync-repo/.github-workflows-scan
+          if [ -d .github/workflows ]; then
+            mkdir -p /tmp/sync-repo/.github-workflows-scan
+            rsync -av .github/workflows/ /tmp/sync-repo/.github-workflows-scan/
+          fi
 
       - name: Generate sync metadata
         run: |
@@ -103,7 +167,7 @@ jobs:
             echo "Source Author: $ACTOR"
             echo "Source Commit URL: https://github.com/$SOURCE_REPO/commit/$SOURCE_SHA"
             echo "Workflow Run URL: https://github.com/$SOURCE_REPO/actions/runs/$RUN_ID"
-            echo "Target Repository: $TARGET_ORG/$TARGET_REPO_INPUT"
+            echo "Target Repository: $TARGET_ORG/$TARGET_REPO"
             echo "Target Branch: $TARGET_BRANCH"
             echo "Sync Timestamp UTC: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
           } > /tmp/sync-repo/.checkmarx-sync
@@ -140,12 +204,31 @@ jobs:
           COMMIT_URL="https://github.com/$SOURCE_REPO/commit/$SOURCE_SHA"
           WORKFLOW_RUN_URL="https://github.com/$SOURCE_REPO/actions/runs/$RUN_ID"
 
+          # Guarda el tip local ANTES de commitear para comparar luego contra
+          # el remoto (más robusto que HEAD~1, que no siempre coincide con el
+          # tip remoto al momento del clone, p.ej. en ramas recién creadas).
+          ORIGINAL_TIP="$(git rev-parse --verify HEAD 2>/dev/null || echo '')"
+
           git commit -m "Sync | Repo=$SOURCE_REPO | Commit=$SOURCE_SHA | Author=$ACTOR" \
                      -m "Source commit: $COMMIT_URL" \
                      -m "Workflow run: $WORKFLOW_RUN_URL"
 
-          echo "Rebasing with latest target branch before push..."
-          git pull --rebase origin "$TARGET_BRANCH"
+          # [FIX 6 - Snapshot exacto, sin rebase] Antes: "git pull --rebase"
+          # podía mezclar contenido del espejo con el snapshot recién
+          # generado, rompiendo la garantía "lo escaneado == lo promocionado".
+          # Ahora: si el espejo divergió desde el clone, el job FALLA y se
+          # reintenta (el grupo de concurrency ya serializa los syncs por
+          # espejo, así que una divergencia indica escritura externa
+          # inesperada que hay que investigar).
+          echo "Verificando que el espejo no haya divergido desde el clone..."
+          if git fetch origin "$TARGET_BRANCH" 2>/dev/null; then
+            if [ "$(git rev-parse "origin/$TARGET_BRANCH")" != "$ORIGINAL_TIP" ]; then
+              echo "::error::El espejo divergió durante el sync (escritura externa detectada). Abortando para no mezclar contenido."
+              exit 1
+            fi
+          else
+            echo "La rama '$TARGET_BRANCH' no existe aún en el espejo (primer sync)."
+          fi
 
           echo "Pushing changes to target repository..."
           git push origin "$TARGET_BRANCH"
@@ -159,3 +242,14 @@ jobs:
 
           echo "===== FINAL STATUS ====="
           git status
+
+      - name: Cleanup credentials
+        # [FIX 8 - Limpieza del token] El token queda en base64 (NO cifrado)
+        # dentro de /tmp/sync-repo/.git/config durante el job. Se elimina
+        # siempre al final, incluso si un paso anterior falló.
+        if: always()
+        run: |
+          if [ -d /tmp/sync-repo/.git ]; then
+            git -C /tmp/sync-repo config --local --unset-all http.https://github.com/.extraheader || true
+            rm -rf /tmp/sync-repo
+          fi
