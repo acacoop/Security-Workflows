@@ -10,7 +10,7 @@ on:
         description: "Branch allowed to trigger the sync (e.g. preprod/stage)"
         required: false
         type: string
-        default: "main"
+        default: "stage"
 
     secrets:
       SYNC_TOKEN:
