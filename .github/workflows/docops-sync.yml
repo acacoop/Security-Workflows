@@ -1,0 +1,54 @@
+name: DocOps - Sync docs to Confluence
+
+# -----------------------------------------------------------------------------
+# Este archivo es el ÚNICO que cada repo necesita. Es un "wrapper" fino que
+# invoca el workflow reusable centralizado en acacoop/DevSecOps-Templates.
+# Toda la lógica real (escaneo, fingerprint, publicación) vive en un solo
+# lugar y se actualiza una sola vez para TODOS los repos que lo usan.
+#
+# Para adoptarlo en un repo nuevo:
+#   1. Copiar este archivo a .github/workflows/docops-sync.yml en el repo.
+#   2. Copiar la carpeta docops/docs-template/ de este repo a docs/ en el
+#      repo nuevo (da la estructura manifest/ + generated/ ya vista).
+#   3. Cargar los 4 secrets de Confluence en el repo nuevo:
+#        gh secret set CONFLUENCE_BASE_URL   --repo <org>/<repo> --body "..."
+#        gh secret set CONFLUENCE_EMAIL      --repo <org>/<repo> --body "..."
+#        gh secret set CONFLUENCE_API_TOKEN  --repo <org>/<repo> --body "..."
+#        gh secret set CONFLUENCE_SPACE_KEY  --repo <org>/<repo> --body "..."
+#      (o configurarlos a nivel organización/entorno para no repetir esto
+#      en cada repo — ver docops/README.md, sección "Aplicación global").
+#      Opcional: COPILOT_GITHUB_TOKEN (ver más abajo, "Enriquecimiento con
+#      IA") — se recomienda configurarlo UNA sola vez a nivel organización
+#      para que escale a todos los repos sin repetir el secret.
+#   4. Hacer push a main. El pipeline corre solo a partir de ahí.
+#
+# Enriquecimiento con IA (opcional, activado por default):
+#   El bloque "2. Desarrollo" y "4. Infraestructura relevada" se completan
+#   además con GitHub Copilot CLI para los campos narrativos que el
+#   escaneo no puede inferir con certeza (funciones esenciales, roles,
+#   integraciones, etc.), SIEMPRE citando un archivo real del repo como
+#   evidencia. Nunca inventa datos ni pisa lo que ya determinó el
+#   escaneo. Para que funcione hace falta pasar el secret
+#   COPILOT_GITHUB_TOKEN (ver docops/README.md, sección "Enriquecimiento
+#   con IA", para cómo generarlo). Si no se provee, el paso se omite solo
+#   y el resto del pipeline sigue normal.
+# -----------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docops-sync:
+    uses: acacoop/DevSecOps-Templates/.github/workflows/docops-sync.yml@main
+    with:
+      ai_enrichment: true # poner en false para desactivar el enriquecimiento con IA en este repo
+    secrets:
+      CONFLUENCE_BASE_URL: ${{ secrets.CONFLUENCE_BASE_URL }}
+      CONFLUENCE_EMAIL: ${{ secrets.CONFLUENCE_EMAIL }}
+      CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+      CONFLUENCE_SPACE_KEY: ${{ secrets.CONFLUENCE_SPACE_KEY }}
+      COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
